@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A modern, lightweight, and high-performance Java client for the [ODX Proxy Gateway](https://gateway.odxproxy.io). This library allows you to interact with any Odoo instance through a simple and robust API. It is designed for performance, portability, and excellent developer experience in both Java and Kotlin.
+A modern, lightweight, and high-performance Java client for the [ODX Proxy Gateway](https://www.odxproxy.io). This library allows you to interact with any Odoo instance through a simple and robust API. It is designed for performance, portability, and excellent developer experience in both Java and Kotlin.
 
 ## Features
 
