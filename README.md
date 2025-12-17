@@ -1,4 +1,6 @@
 # ODXProxy Java/Kotlin Client
+![Static Badge](https://img.shields.io/badge/License-MIT-green)
+![Static Badge](https://img.shields.io/badge/JDK-17-orange)
 
 A high-performance, zero-reflection, thread-safe client library for connecting to Odoo instances via the ODXProxy Gateway.
 Built with Kotlin for robust type safety, but designed for seamless interoperability with Java 8+ (Android, JavaFX, Spring Boot).
