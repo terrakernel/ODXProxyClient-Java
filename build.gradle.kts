@@ -2,8 +2,7 @@ plugins {
     kotlin("jvm") version "1.9.22"
     kotlin("plugin.serialization") version "1.9.22"
     id("org.jetbrains.dokka") version "1.9.10"
-    `maven-publish`
-    signing
+    id("com.vanniktech.maven.publish") version "0.28.0"
 }
 
 group = "io.odxproxy"
@@ -35,12 +34,43 @@ java {
     toolchain {
         languageVersion.set(JavaLanguageVersion.of(17))
     }
+    // FIX IS HERE: Explicitly force Java 8 bytecode generation
     sourceCompatibility = JavaVersion.VERSION_1_8
     targetCompatibility = JavaVersion.VERSION_1_8
 }
 
 kotlin {
     explicitApi()
+}
+
+mavenPublishing {
+    publishToMavenCentral(com.vanniktech.maven.publish.SonatypeHost.CENTRAL_PORTAL)
+    signAllPublications()
+    coordinates("io.odxproxy", "odxproxyclient-java", "0.1.0")
+
+    pom {
+        name.set("ODXProxy Java Client")
+        description.set("High-performance Java/Kotlin client for ODXProxy Gateway.")
+        url.set("https://github.com/terrakernel/odxproxy-java")
+        licenses {
+            license {
+                name.set("MIT License")
+                url.set("http://www.opensource.org/licenses/mit-license.php")
+            }
+        }
+        developers {
+            developer {
+                id.set("jwajong")
+                name.set("Julian Wajong")
+                email.set("julian.wajong@gmail.com")
+                organization.set("TERRAKERNEL PTE. LTD.")
+            }
+        }
+        scm {
+            connection.set("scm:git:git://github.com/terrakernel/ODXProxyClient-Java.git")
+            url.set("https://github.com/terrakernel/ODXProxyClient-Java.git")
+        }
+    }
 }
 
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
@@ -51,67 +81,9 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
     }
 }
 
-tasks.withType<Jar> {
-    manifest {
-        attributes(
-            "Implementation-Title" to project.name,
-            "Implementation-Version" to project.version,
-            // CRITICAL: This gives your library a proper name for Java 9+ Modules
-            "Automatic-Module-Name" to "io.odxproxy"
-        )
-    }
-}
-
-
 tasks.test {
     useJUnitPlatform()
     testLogging {
         events("passed", "skipped", "failed")
-    }
-}
-
-tasks.named<org.jetbrains.dokka.gradle.DokkaTask>("dokkaHtml") {
-    outputDirectory.set(layout.buildDirectory.dir("javadoc"))
-}
-
-publishing {
-    publications {
-        create<MavenPublication>("mavenJava") {
-            // This line is the magic. It tells Gradle to take the compiled Jar + Sources + Javadoc
-            from(components["java"])
-            
-            // This is metadata required for Maven Central
-            pom {
-                name.set("ODXProxy Java Client")
-                description.set("High-performance Java/Kotlin client for ODXProxy Gateway.")
-                url.set("https://github.com/terrakernel/odxproxy-java")
-                licenses {
-                    license {
-                        name.set("MIT License")
-                        url.set("http://www.opensource.org/licenses/mit-license.php")
-                    }
-                }
-                developers {
-                    developer {
-                        id.set("jwajong")
-                        name.set("Julian Wajong")
-                        email.set("julian.wajong@gmail.com")
-                        organization.set("TERRAKERNEL PTE. LTD.")
-                    }
-                }
-                scm {
-                    connection.set("scm:git:git://github.com/terrakernel/odxproxy-java.git")
-                    url.set("https://github.com/terrakernel/odxproxy-java")
-                }
-            }
-        }
-    }
-}
-
-signing {
-    // Only try to sign if keys are present (prevents build failure on local machines without GPG)
-    if (project.hasProperty("signing.keyId")) {
-        useGpgCmd()
-        sign(publishing.publications["mavenJava"])
     }
 }

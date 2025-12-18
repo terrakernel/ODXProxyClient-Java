@@ -1,5 +1,6 @@
 # ODXProxy Java/Kotlin Client
 ![Static Badge](https://img.shields.io/badge/License-MIT-green)
+[![Maven Central](https://img.shields.io/maven-central/v/io.odxproxy/odxproxyclient-java?color=blue)](https://central.sonatype.com/artifact/io.odxproxy/odxproxyclient-java)
 ![Static Badge](https://img.shields.io/badge/JDK-17-orange)
 
 A high-performance, zero-reflection, thread-safe client library for connecting to Odoo instances via the ODXProxy Gateway.
