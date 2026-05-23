@@ -2,7 +2,6 @@
 .gradle/
 build/
 out/
-gradle/wrapper/gradle-wrapper.properties
 
 # --- IDE Settings (IntelliJ / Android Studio) ---
 .idea/
