@@ -1,8 +1,8 @@
 plugins {
-    kotlin("jvm") version "1.9.22"
-    kotlin("plugin.serialization") version "1.9.22"
+    kotlin("jvm") version "2.0.21"
+    kotlin("plugin.serialization") version "2.0.21"
     id("org.jetbrains.dokka") version "1.9.10"
-    id("com.vanniktech.maven.publish") version "0.28.0"
+    id("com.vanniktech.maven.publish") version "0.33.0"
 }
 
 group = "io.odxproxy"
@@ -14,16 +14,14 @@ repositories {
 
 val okHttpVersion = "4.12.0"
 val ulidVersion = "5.2.3"
-val serializationVersion = "1.6.2"
-val coroutinesVersion = "1.8.0"
-val junitVersion = "5.10.1"
+val serializationVersion = "1.7.3"
+val junitVersion = "5.12.2"
 
 dependencies {
     implementation(kotlin("stdlib"))
     implementation("com.squareup.okhttp3:okhttp:$okHttpVersion")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:$serializationVersion")
     implementation("com.github.f4b6a3:ulid-creator:$ulidVersion")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutinesVersion")
 
     testImplementation(kotlin("test"))
     testImplementation("org.junit.jupiter:junit-jupiter:$junitVersion")
@@ -78,6 +76,13 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
         jvmTarget = "1.8"
         javaParameters = true
         freeCompilerArgs += listOf("-Xjvm-default=all")
+    }
+}
+
+sourceSets {
+    test {
+        kotlin.setSrcDirs(listOf("src/main/test/kotlin", "."))
+        kotlin.include("io/odxproxy/**/*.kt", "TestModels.kt")
     }
 }
 

@@ -1,8 +1,10 @@
 package io.odxproxy
 
+import io.odxproxy.client.OdxProxyClient
 import io.odxproxy.client.OdxProxyClientInfo
 import io.odxproxy.model.OdxClientKeywordRequest
 import io.odxproxy.model.OdxInstanceInfo
+import java.util.concurrent.atomic.AtomicReference
 import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -19,13 +21,20 @@ class OdxProxyLiveTest {
     private val configFile = File("odx-test.properties")
     private val props = Properties()
 
+    private val requiredKeys = listOf(
+        "odoo.url", "odoo.user.id", "odoo.db", "odoo.api.key",
+        "odx.api.key", "odx.gateway.url"
+    )
+
     @BeforeAll
     fun setup() {
         if (configFile.exists()) {
             FileInputStream(configFile).use { props.load(it) }
         }
-        Assumptions.assumeTrue(configFile.exists(), "Skipping Live Tests")
-        
+        Assumptions.assumeTrue(configFile.exists(), "Skipping Live Tests: odx-test.properties not found")
+        val missing = requiredKeys.filter { props.getProperty(it).isNullOrBlank() }
+        Assumptions.assumeTrue(missing.isEmpty(), "Skipping Live Tests: missing/blank keys $missing")
+
         val instance = OdxInstanceInfo(
             props.getProperty("odoo.url"),
             props.getProperty("odoo.user.id").toInt(),
@@ -33,12 +42,21 @@ class OdxProxyLiveTest {
             props.getProperty("odoo.api.key")
         )
         val config = OdxProxyClientInfo(instance, props.getProperty("odx.api.key"), props.getProperty("odx.gateway.url"))
-        try { OdxProxy.init(config) } catch (e: Exception) {}
+        resetSingleton()
+        OdxProxy.init(config)
+    }
+
+    private fun resetSingleton() {
+        try {
+            val field = OdxProxyClient::class.java.getDeclaredField("instanceRef")
+            field.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            (field.get(null) as AtomicReference<Any?>).set(null)
+        } catch (_: Exception) { /* ignore */ }
     }
 
     @Test
     fun `Live Lifecycle`() {
-        Assumptions.assumeTrue(props.containsKey("odoo.url"))
         val model = "res.partner"
         val timestamp = System.currentTimeMillis()
         val createVals = mapOf("name" to "ODX_TEST_$timestamp", "email" to "test_$timestamp@odxproxy.io")

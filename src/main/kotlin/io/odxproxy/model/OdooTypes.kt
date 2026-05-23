@@ -1,5 +1,6 @@
 package io.odxproxy.model
 
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.descriptors.SerialDescriptor
@@ -67,6 +68,7 @@ public object OdxMany2OneSerializer : KSerializer<OdxMany2One> {
     }
 }
 
+@OptIn(ExperimentalSerializationApi::class)
 public class OdxVariantSerializer<T>(private val dataSerializer: KSerializer<T>) : KSerializer<OdxVariant<T>> {
     override val descriptor: SerialDescriptor = dataSerializer.descriptor
 

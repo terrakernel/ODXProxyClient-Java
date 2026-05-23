@@ -1,180 +1,263 @@
 # ODXProxy Java/Kotlin Client
-![Static Badge](https://img.shields.io/badge/License-MIT-green)
+
+![License](https://img.shields.io/badge/License-MIT-green)
 [![Maven Central](https://img.shields.io/maven-central/v/io.odxproxy/odxproxyclient-java?color=blue)](https://central.sonatype.com/artifact/io.odxproxy/odxproxyclient-java)
-![Static Badge](https://img.shields.io/badge/JDK-17-orange)
+![JDK](https://img.shields.io/badge/JDK-17%20toolchain%20%E2%80%94%20Java%208%20bytecode-orange)
+![Android](https://img.shields.io/badge/Android-API%2024%2B-brightgreen)
 
-A high-performance, zero-reflection, thread-safe client library for connecting to Odoo instances via the ODXProxy Gateway.
-Built with Kotlin for robust type safety, but designed for seamless interoperability with Java 8+ (Android, JavaFX, Spring Boot).
+A high-performance, thread-safe Kotlin/Java client for connecting to Odoo via the **ODXProxy Gateway**.
+Written in Kotlin for type safety, compiled to **Java 8 bytecode** for seamless interop with Java, Android (API 24+), JavaFX, and Spring Boot.
 
-## 🚀 Features
-⚡ **Zero-Reflection Serialization:** Uses kotlinx.serialization for instant parsing without runtime overhead (No Jackson/Gson bloat).
+---
 
-🛡️ **Odoo-Proof:** Custom data types (OdxMany2One, OdxVariant) automatically handle Odoo's polymorphic JSON (e.g., handling false where null or an object is expected).
+## Why this library exists
 
-🧵 **Non-Blocking by Default:** All operations (Network AND Serialization) run on background threads.
-☕ Java Friendly: Returns CompletableFuture for easy integration with standard Java code.
+Odoo's JSON-RPC API is **polymorphic** in a way no generic JSON deserializer handles well:
+- Relational fields return `[id, "Name"]` *or* `false` *or* `null`.
+- Optional scalars (string, date, ref) return the value *or* the literal boolean `false` instead of `null`.
 
-## 🛠 Initialization
-**You must initialize the library once** (e.g., in main(), Application.start(), or onCreate()).
+A naive Retrofit / Gson / Jackson client crashes on the first `false` where it expected `String`. This library wraps the gateway transport and ships purpose-built decoders (`OdxMany2One`, `OdxVariant<T>`) that absorb these quirks so consumer code stays clean.
+
+---
+
+## Quick start
+
+### Install (Gradle)
+
+```kotlin
+dependencies {
+    implementation("io.odxproxy:odxproxyclient-java:0.1.0")
+}
+```
+
+### Initialize (once, at app startup)
+
 ```java
-import io.odxproxy.OdxProxy;
-import io.odxproxy.client.OdxProxyClientInfo;
-import io.odxproxy.model.OdxInstanceInfo;
-
-// 1. Define the Target Odoo Instance
+// In Application.onCreate(), main(), Application.start(), etc.
 OdxInstanceInfo instance = new OdxInstanceInfo(
-    "https://my-odoo.com", // Odoo URL
-    1,                     // User ID
-    "my_database",         // Database Name
-    "odoo_user_api_key"    // Odoo User API Key
+    "https://my-odoo.com",   // Odoo URL
+    1,                       // Odoo user id
+    "my_database",           // db name
+    "odoo_user_api_key"      // Odoo API key
 );
 
-// 2. Configure the Proxy
 OdxProxyClientInfo config = new OdxProxyClientInfo(
-    instance, 
-    "odx_proxy_api_key",          // Your Gateway Key
-    "https://gateway.odxproxy.io" // Gateway URL
+    instance,
+    "odx_proxy_api_key",           // gateway key
+    "https://gateway.odxproxy.io"  // gateway URL
 );
 
-// 3. Initialize
 OdxProxy.init(config);
 ```
 
-# 📚 Helper Classes (Critical)
-Odoo's JSON is inconsistent. This library provides specific types to prevent crashes.
-**1. OdxMany2One**
-Handles relational fields. Odoo might return false (boolean), null, or [id, "Name"].
-Java Usage:
-```java
-OdxMany2One company = partner.getCompany(); // Assuming mapped POJO
-Integer id = company.getId();     // Returns ID or null
-String name = company.getName();  // Returns Name or null
-```
-1. OdxVariant<T>
-Handles nullable fields where Odoo returns false (boolean) instead of null.
-Example: A field ref might be a String "ABC" or false.
-Usage:
-```java
-OdxVariant<String> ref = partner.getRef();
-String value = ref.getValue(); // Returns "ABC" or null (safely ignores 'false')
-```
-## 3. OdxClientKeywordRequest
-Used to control pagination, sorting, and context.
-```java
-OdxClientKeywordRequest options = new OdxClientKeywordRequest(
-    Arrays.asList("id", "name", "email"), // Fields
-    "id desc",                            // Order
-    10,                                   // Limit
-    0,                                    // Offset
-    new OdxClientRequestContext(...),     // Context (Timezone/Lang)
-    null                                  // Domain (Optional explicit override)
-);
-```
-## 💻 Available Methods
-All methods are static on OdxProxy and return **CompletableFuture<OdxServerResponse<T>>.**
-## 1. Search & Read (Most Common)
-Fetches records matching a domain.
-```java
-import kotlinx.serialization.json.JsonObject; // Use JsonObject for raw data
+`OdxProxy.init()` is **idempotent-or-throws**: calling it twice raises `IllegalStateException`. The library is a process-wide singleton.
 
-List<Object> domain = Arrays.asList(
-    Arrays.asList("customer_rank", ">", 0),
-    Arrays.asList("email", "!=", false)
-);
+### Use it
 
+```java
 OdxProxy.searchRead(
     "res.partner",
-    domain,
-    new OdxClientKeywordRequest(Arrays.asList("name", "email"), null, 5, 0, null, null),
-    null,
-    JsonObject.class // Returns List<JsonObject>
+    Arrays.asList(Arrays.asList("customer_rank", ">", 0)),
+    new OdxClientKeywordRequest(Arrays.asList("name", "email"), null, 5, 0, null),
+    null,                  // request id — null = auto-generate ULID
+    JsonObject.class       // result element type
 ).thenAccept(response -> {
     response.getResult().forEach(partner -> {
         System.out.println(partner.get("name"));
     });
 });
 ```
-## 2. Create
-Creates a new record.
-```java
-Map<String, Object> values = new HashMap<>();
-values.put("name", "New Customer");
-values.put("email", "test@test.com");
 
-OdxProxy.create(
-    "res.partner",
-    Arrays.asList(values),
-    new OdxClientKeywordRequest(),
-    null,
-    Integer.class // Odoo returns the ID of the new record
-).thenAccept(response -> {
-    System.out.println("Created ID: " + response.getResult());
-});
+---
+
+## API reference
+
+All methods are `@JvmStatic` on `io.odxproxy.OdxProxy` and return `CompletableFuture<OdxServerResponse<T>>`.
+
+| Method | Odoo action | Returns |
+|---|---|---|
+| `search(model, domain, kw, id)` | `search` | `List<Int>` of matching ids |
+| `searchRead(model, domain, kw, id, T.class)` | `search_read` | `List<T>` |
+| `read(model, ids, kw, id, T.class)` | `read` | `List<T>` |
+| `searchCount(model, domain, kw, id)` | `search_count` | `Int` |
+| `create(model, [vals…], kw, id, T.class)` | `create` | id of new record (typically `Integer`) |
+| `write(model, ids, values, kw, id)` | `write` | `Boolean` |
+| `remove(model, ids, kw, id)` | `unlink` | `Boolean` |
+| `fieldsGet(model, kw, id, T.class)` | `fields_get` | schema map (use `JsonObject.class`) |
+| `callMethod(model, fn, params, kw, id, T.class)` | `call_method` | depends on the Odoo method |
+
+`kw` is an `OdxClientKeywordRequest(fields, order, limit, offset, context)`.
+
+> The `id` parameter is the JSON-RPC request id — pass `null` to auto-generate a ULID.
+
+---
+
+## Odoo polymorphism — the types you **must** use
+
+Odoo's JSON is inconsistent. Use these wrappers in your `@Serializable` models or deserialization will fail.
+
+### `OdxMany2One` — for relational (`many2one`) fields
+
+Odoo returns `[7, "ACME"]`, `false`, or `null` depending on whether the relation is set.
+
+```java
+OdxMany2One company = partner.getCompany();
+Integer id = company.getId();     // null if unset
+String name = company.getName();  // null if unset
+boolean isSet = company.isSet();
 ```
-## 3. Write (Update)
-Updates existing records.
-```java
-Map<String, Object> updates = new HashMap<>();
-updates.put("name", "Updated Name");
 
-OdxProxy.write(
-    "res.partner",
-    Arrays.asList(10, 11), // IDs to update
-    updates,
-    new OdxClientKeywordRequest(),
-    null
-).thenAccept(response -> {
-    System.out.println("Success: " + response.getResult()); // Returns Boolean
-});
+### `OdxVariant<T>` — for nullable scalars Odoo returns as `false`
+
+Odoo returns the literal boolean `false` for "empty" strings, dates, refs, etc.
+
+```java
+OdxVariant<String> ref = partner.getRef();
+String value = ref.getValue();   // null if Odoo sent false
 ```
 
-## 4. Remove (Unlink)
-Deletes records.
+### `OdxClientKeywordRequest` — pagination + Odoo context
+
 ```java
-OdxProxy.remove(
-    "res.partner",
-    Arrays.asList(99), // ID to delete
-    new OdxClientKeywordRequest(),
-    null
+new OdxClientKeywordRequest(
+    Arrays.asList("id", "name", "email"),   // fields
+    "id desc",                              // order
+    10,                                     // limit
+    0,                                      // offset
+    new OdxClientRequestContext(...)        // tz / lang / company
 );
 ```
 
-## 5. Call Method
-Calls a custom method on the Odoo model.
-```java
-OdxProxy.callMethod(
-    "res.partner",
-    "action_archive", // The function name on the model
-    Arrays.asList(Arrays.asList(5)), // Params (usually IDs)
-    new OdxClientKeywordRequest(),
-    null,
-    Boolean.class // Return type depends on the Odoo method
-);
+`search`, `read`, `create`, `write`, `unlink`, and `fields_get` ignore pagination fields (the library strips them automatically). `search_read`, `search_count`, and `call_method` pass them through.
+
+---
+
+## Defining typed models
+
+Always annotate with `@Serializable` (kotlinx-serialization). Use `OdxMany2One` for relations and `OdxVariant<T>` for nullable scalars.
+
+```kotlin
+@Serializable
+data class Partner(
+    val id: Int,
+    val name: String,
+    @SerialName("company_id") val company: OdxMany2One,   // [id, "Name"] | false
+    val email: OdxVariant<String>,                        // "x@y.com" | false
+    val ref: OdxVariant<String>
+)
 ```
-## 🧵 Threading & Concurrency
-Important:
-Background Execution: All library logic (JSON Serialization + Network Calls) happens on a background thread pool. It will not freeze your UI.
-Callbacks: The .thenAccept() or .exceptionally() callbacks run on a background thread.
-UI Updates: If using Android or JavaFX, you must switch back to the UI thread to update views.
-JavaFX Example:
+
+From Java, this Kotlin data class is a normal POJO with getters (`partner.getName()`, `partner.getCompany().getId()`).
+
+---
+
+## Threading model
+
+| What | Where it runs |
+|---|---|
+| **Request encoding** | Inline on the calling thread (sub-millisecond after serializer cache warm-up) |
+| **Network I/O** | OkHttp dispatcher pool (background) |
+| **Response decoding** | OkHttp dispatcher pool (background) |
+| **`.thenAccept` / `.thenApply` callbacks** | OkHttp dispatcher pool (background) |
+
+**Implications for Android / JavaFX consumers:**
+- Don't block dispatcher threads in your callbacks — they're a finite pool serving all in-flight requests. Hand off long work to your own executor (`.thenAcceptAsync(cb, myExecutor)`).
+- Always switch to the UI thread before touching views.
+
 ```java
+// Android
 OdxProxy.searchRead(...).thenAccept(response -> {
-    // We are in background thread here
-    Platform.runLater(() -> {
-        // Now safe to update UI
-        myLabel.setText("Loaded!");
-    });
+    runOnUiThread(() -> myView.setText(response.getResult().get(0).toString()));
+});
+
+// JavaFX
+OdxProxy.searchRead(...).thenAccept(response -> {
+    Platform.runLater(() -> myLabel.setText("Loaded"));
 });
 ```
-## 🤖 AI Developer Guide
-This repository includes a file named **AI_SDK_GUIDE.md**.
-What is it?
-Generic AI models (Copilot, ChatGPT, Cursor) do not know how this specific library works. They often try to write generic HTTP calls using Retrofit or standard OkHttp, which defeats the purpose of this library.
-How to use it:
-For Cursor IDE: Rename the file to .cursorrules in your project root. The AI will automatically read it and generate perfect code for this library.
-For Copilot/Chat: Drag and drop the AI_SDK_GUIDE.md file into your chat window context.
-Benefit: The AI will instantly know to use OdxMany2One instead of String, preventing polymorphic JSON crashes.
 
+**Thread-safety:** the library is fully safe for concurrent use. The `OdxProxy` singleton, the underlying `OdxProxyClient`, the OkHttp `Dispatcher` + `ConnectionPool`, and the internal `KSerializer` caches are all designed for concurrent access. You can fire hundreds of overlapping requests from any threads without external synchronization.
 
-# 📄 License
-MIT License. See LICENSE for details.
+---
+
+## Errors
+
+Failures complete the `CompletableFuture` exceptionally — `.get()` throws `ExecutionException`, `.exceptionally(...)` receives it.
+
+| Cause | `cause` of the `ExecutionException` |
+|---|---|
+| Odoo / gateway returned a JSON-RPC error envelope (200 *or* non-2xx) | `OdxServerErrorException` with `.code`, `.message`, `.data` (raw `JsonElement`) |
+| HTTP error with no JSON body | `OdxServerErrorException` with HTTP status code |
+| Socket / DNS / TLS failure | `java.io.IOException` |
+| Serialization failure (response shape mismatch) | `IOException` wrapping the kotlinx exception |
+
+Always handle both `result` and `error` paths — Odoo can return HTTP 200 with an error envelope (e.g., `AccessDenied`), which the library surfaces as `OdxServerErrorException`.
+
+---
+
+## For Android consumers specifically
+
+- **Minimum API: 24 (Android 7.0 Nougat).** This is driven by `CompletableFuture`, not Kotlin or OkHttp.
+- For API 24–25, enable **core library desugaring** so `java.time.Duration` resolves at runtime:
+  ```kotlin
+  android {
+      compileOptions {
+          isCoreLibraryDesugaringEnabled = true
+      }
+  }
+  dependencies {
+      coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
+  }
+  ```
+- `OdxProxy` state is in-process. After Android kills the app process, call `OdxProxy.init()` again from `Application.onCreate()`.
+- Cancelling the returned `CompletableFuture` does **not** cancel the underlying HTTP request — the request still runs to completion, the callback just won't fire. This is standard JDK `CompletableFuture` behavior.
+
+---
+
+## Architecture (for contributors and LLMs reading the source)
+
+Three layers under `src/main/kotlin/io/odxproxy/`:
+
+1. **`OdxProxy`** — `@JvmStatic` static facade. Stateless. Generates a ULID per request when the caller passes `null` as `id`. Delegates to the client singleton.
+2. **`client/OdxProxyClient`** — process-wide singleton via `AtomicReference`. Owns the shared `OkHttpClient` (tuned dispatcher + 16-conn keepalive pool), the `Json` codec (`ignoreUnknownKeys`, `isLenient`, `explicitNulls = false`), and two `ConcurrentHashMap` serializer caches (element and `List<element>`) populated via atomic `computeIfAbsent`. POSTs to `${gatewayUrl}/api/odoo/execute` with `X-Api-Key`. Request bodies are stream-encoded into an Okio `Buffer` (no intermediate Java `String`) and responses are stream-decoded via `Json.decodeFromStream`.
+3. **`model/`** — `Models.kt` holds the request/response envelopes plus `toJsonElement` for converting arbitrary Java/Kotlin containers to `JsonElement` (so Java callers can pass plain `Map`/`List`). `OdooTypes.kt` holds `OdxMany2One` and `OdxVariant<T>` plus their custom serializers — these are the core defense against polymorphic Odoo JSON. `OdxIdSerializer` accepts the JSON-RPC `id` as either string or number and normalizes to `String`.
+
+`exception/OdxServerErrorException` is what every failure surfaces as (HTTP + JSON-RPC error envelopes both).
+
+The library compiles with `kotlin { explicitApi() }` — every public declaration must have an explicit `public` modifier and explicit return type.
+
+---
+
+## Build / test
+
+```bash
+./gradlew build                                # compile + test
+./gradlew test                                 # run all JUnit 5 tests
+./gradlew test --tests "io.odxproxy.OdxProxyIntegrationTest"
+./gradlew publishToMavenLocal
+```
+
+Tests live at `src/main/test/kotlin` (non-standard; the `build.gradle.kts` sourceSet config points the test task there). The live integration test (`OdxProxyLiveTest`) self-skips unless `odx-test.properties` exists at the repo root with valid gateway credentials.
+
+---
+
+## What an LLM reading consumer code should enforce
+
+If you're an AI assistant generating code that uses this library, these rules prevent the most common runtime crashes:
+
+| Anti-pattern | Why it breaks | Correct form |
+|---|---|---|
+| `val company: String?` for a `many2one` field | Odoo sends `[id, "Name"]` array or `false` — kotlinx-serialization throws | `val company: OdxMany2One` |
+| `val email: String?` when Odoo can send `false` for empty | `false` is not a valid `String` decode | `val email: OdxVariant<String>` |
+| `new OdxProxyClient(...)` | Constructor is internal-only; consumers must use the facade | Use `OdxProxy.<method>(...)` |
+| Calling `OdxProxy.<method>` before `OdxProxy.init(...)` | Throws `IllegalStateException` | Always init in `Application.onCreate()` / `main()` first |
+| Reading `response.getResult()` without handling errors | Gateway can return HTTP 200 with a JSON-RPC error envelope; the future will be completed exceptionally | Use `.exceptionally(...)` or wrap `.get()` in try/catch for `OdxServerErrorException` |
+| Hand-rolling HTTP to the gateway with OkHttp/Retrofit | Defeats the polymorphism defense, the singleton transport, and the cached serializers | Use `OdxProxy.<method>(...)` |
+| `Json { ... }.decodeFromString(...)` on raw responses | Bypasses `OdxServerResponse<T>` envelope handling | Let the library decode; consume `OdxServerResponse<T>.result` |
+| Blocking inside `.thenAccept` (e.g., file I/O, DB call, `Thread.sleep`) | Holds an OkHttp dispatcher thread, throttling other requests | Use `.thenAcceptAsync(cb, myExecutor)` |
+
+---
+
+## License
+
+MIT — see `LICENSE`.
