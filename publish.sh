@@ -47,8 +47,22 @@ if [[ "${perms}" != "600" && "${perms}" != "400" ]]; then
   exit 1
 fi
 
-# shellcheck disable=SC1090
-source "${CONFIG_FILE}"
+# Parse KEY=VALUE lines manually so values with spaces / shell metacharacters
+# work without requiring the user to quote them. (Sourcing the file directly
+# would fail under `set -u` if a password contains an unquoted space.)
+while IFS='=' read -r key value; do
+  # Skip blank lines and comments.
+  [[ -z "${key// }" || "${key:0:1}" == "#" ]] && continue
+  # Trim surrounding whitespace from the key; strip optional matching quotes
+  # from the value but otherwise preserve it byte-for-byte.
+  key="${key// }"
+  if [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]] \
+  || [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]]; then
+    value="${value:1:${#value}-2}"
+  fi
+  printf -v "${key}" '%s' "${value}"
+  export "${key?}"
+done < "${CONFIG_FILE}"
 
 for var in MAVEN_CENTRAL_USERNAME MAVEN_CENTRAL_PASSWORD GPG_KEY_ID GPG_KEY_PASSWORD; do
   if [[ -z "${!var:-}" ]]; then
