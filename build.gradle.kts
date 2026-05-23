@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "io.odxproxy"
-version = "0.1.0"
+version = "0.1.1"
 
 repositories {
     mavenCentral()
@@ -44,7 +44,7 @@ kotlin {
 mavenPublishing {
     publishToMavenCentral(com.vanniktech.maven.publish.SonatypeHost.CENTRAL_PORTAL)
     signAllPublications()
-    coordinates("io.odxproxy", "odxproxyclient-java", "0.1.0")
+    coordinates("io.odxproxy", "odxproxyclient-java", "0.1.1")
 
     pom {
         name.set("ODXProxy Java Client")
