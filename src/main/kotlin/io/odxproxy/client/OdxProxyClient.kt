@@ -122,25 +122,25 @@ public class OdxProxyClient private constructor(options: OdxProxyClientInfo) {
             override fun onResponse(call: Call, response: Response) {
                 response.use { resp ->
                     val envelopeSerializer = OdxServerResponse.serializer(resultSerializer)
+                    // OkHttp 5 made Response.body non-null — an absent body is an empty one,
+                    // so emptiness is checked via contentLength() rather than a null check.
                     val responseBody = resp.body
 
                     if (!resp.isSuccessful) {
                         // Try to decode an error envelope; if the body isn't JSON, fall back
                         // to a raw HTTP-status exception.
-                        if (responseBody != null) {
-                            try {
-                                val errorEnvelope = json.decodeFromStream(envelopeSerializer, responseBody.byteStream())
-                                if (errorEnvelope.error != null) {
-                                    future.completeExceptionally(OdxServerErrorException(errorEnvelope.error))
-                                    return
-                                }
-                            } catch (_: Exception) { /* not a JSON envelope; fall through */ }
-                        }
+                        try {
+                            val errorEnvelope = json.decodeFromStream(envelopeSerializer, responseBody.byteStream())
+                            if (errorEnvelope.error != null) {
+                                future.completeExceptionally(OdxServerErrorException(errorEnvelope.error))
+                                return
+                            }
+                        } catch (_: Exception) { /* not a JSON envelope; fall through */ }
                         future.completeExceptionally(OdxServerErrorException(resp.code, resp.message, null))
                         return
                     }
 
-                    if (responseBody == null) {
+                    if (responseBody.contentLength() == 0L) {
                         future.completeExceptionally(IOException("Empty response from server"))
                         return
                     }
