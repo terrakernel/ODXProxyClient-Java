@@ -26,7 +26,7 @@ A naive Retrofit / Gson / Jackson client crashes on the first `false` where it e
 
 ```kotlin
 dependencies {
-    implementation("io.odxproxy:odxproxyclient-java:0.1.0")
+    implementation("io.odxproxy:odxproxyclient-java:0.1.2")
 }
 ```
 
