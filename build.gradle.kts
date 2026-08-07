@@ -1,25 +1,28 @@
 plugins {
-    kotlin("jvm") version "2.0.21"
-    kotlin("plugin.serialization") version "2.0.21"
+    kotlin("jvm") version "2.3.21"
+    kotlin("plugin.serialization") version "2.3.21"
     id("org.jetbrains.dokka") version "1.9.10"
     id("com.vanniktech.maven.publish") version "0.33.0"
 }
 
 group = "io.odxproxy"
-version = "0.1.1"
+version = "0.1.2"
 
 repositories {
     mavenCentral()
 }
 
-val okHttpVersion = "4.12.0"
+val okHttpVersion = "5.4.0"
 val ulidVersion = "5.2.3"
-val serializationVersion = "1.7.3"
+val serializationVersion = "1.11.0"
 val junitVersion = "5.12.2"
 
 dependencies {
     implementation(kotlin("stdlib"))
-    implementation("com.squareup.okhttp3:okhttp:$okHttpVersion")
+    // OkHttp 5 is a KMP build: the plain `okhttp` artifact is a metadata stub with no classes,
+    // and its POM does not point Maven consumers at the real jar. Depend on `okhttp-jvm` so the
+    // published POM carries a coordinate that resolves for Maven users, not just Gradle ones.
+    implementation("com.squareup.okhttp3:okhttp-jvm:$okHttpVersion")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:$serializationVersion")
     implementation("com.github.f4b6a3:ulid-creator:$ulidVersion")
 
@@ -42,9 +45,9 @@ kotlin {
 }
 
 mavenPublishing {
-    publishToMavenCentral(com.vanniktech.maven.publish.SonatypeHost.CENTRAL_PORTAL)
+    publishToMavenCentral()
     signAllPublications()
-    coordinates("io.odxproxy", "odxproxyclient-java", "0.1.1")
+    coordinates("io.odxproxy", "odxproxyclient-java", "0.1.2")
 
     pom {
         name.set("ODXProxy Java Client")
@@ -72,10 +75,12 @@ mavenPublishing {
 }
 
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
-    kotlinOptions {
-        jvmTarget = "1.8"
-        javaParameters = true
-        freeCompilerArgs += listOf("-Xjvm-default=all")
+    // kotlinOptions was removed in Kotlin 2.2; compilerOptions is the replacement DSL.
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_1_8)
+        javaParameters.set(true)
+        // Kotlin 2.3 renamed -Xjvm-default=all to -jvm-default=no-compatibility.
+        freeCompilerArgs.addAll("-jvm-default=no-compatibility")
     }
 }
 

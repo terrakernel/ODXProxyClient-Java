@@ -5,33 +5,44 @@
 
     <groupId>io.odxproxy</groupId>
     <artifactId>odxproxyclient-java</artifactId>
-    <version>0.1.0</version>
+    <version>0.1.2</version>
     <packaging>jar</packaging>
 
+    <!--
+      Gradle (build.gradle.kts) is the source of truth for this project. This file mirrors its
+      coordinates for IDEs and consumers that prefer Maven metadata; keep the versions below in
+      sync with the `val *Version` declarations in build.gradle.kts.
+    -->
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.source>1.8</maven.compiler.source>
         <maven.compiler.target>1.8</maven.compiler.target>
-        <okhttp.version>5.2.1</okhttp.version>
-        <jackson.version>2.20</jackson.version>
+        <kotlin.version>2.3.21</kotlin.version>
+        <okhttp.version>5.4.0</okhttp.version>
+        <serialization.version>1.11.0</serialization.version>
         <ulid.creator.version>5.2.3</ulid.creator.version>
     </properties>
 
     <dependencies>
         <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-stdlib</artifactId>
+            <version>${kotlin.version}</version>
+        </dependency>
+        <!--
+          OkHttp 5 is published as a Kotlin Multiplatform build. The plain `okhttp` artifact is a
+          metadata stub containing no classes, and its POM does not depend on the real jar, so
+          Maven consumers must name `okhttp-jvm` explicitly or they get a NoClassDefFoundError.
+        -->
+        <dependency>
             <groupId>com.squareup.okhttp3</groupId>
-            <artifactId>okhttp</artifactId>
+            <artifactId>okhttp-jvm</artifactId>
             <version>${okhttp.version}</version>
         </dependency>
         <dependency>
-            <groupId>com.fasterxml.jackson.core</groupId>
-            <artifactId>jackson-databind</artifactId>
-            <version>${jackson.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>com.fasterxml.jackson.datatype</groupId>
-            <artifactId>jackson-datatype-jdk8</artifactId>
-            <version>${jackson.version}</version>
+            <groupId>org.jetbrains.kotlinx</groupId>
+            <artifactId>kotlinx-serialization-json</artifactId>
+            <version>${serialization.version}</version>
         </dependency>
         <dependency>
             <groupId>com.github.f4b6a3</groupId>
