@@ -30,6 +30,23 @@ dependencies {
 }
 ```
 
+### Install (Maven)
+
+```xml
+<dependency>
+    <groupId>io.odxproxy</groupId>
+    <artifactId>odxproxyclient-java</artifactId>
+    <version>0.1.2</version>
+</dependency>
+```
+
+> Nothing else to declare. From 0.1.2 this library depends on OkHttp 5 via the
+> `com.squareup.okhttp3:okhttp-jvm` coordinate rather than plain `okhttp`, because the latter is a
+> Kotlin Multiplatform metadata stub that contains no classes and whose POM does not point Maven at
+> the real jar. Gradle resolves that stub correctly through module metadata; Maven does not, and a
+> consumer who ends up with it gets a `NoClassDefFoundError` at runtime. Depending on `okhttp-jvm`
+> means transitive resolution works for both build tools.
+
 ### Initialize (once, at app startup)
 
 ```java
