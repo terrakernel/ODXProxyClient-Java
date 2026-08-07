@@ -20,6 +20,7 @@ import java.io.FileInputStream
 import java.util.Properties
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -140,9 +141,19 @@ class OdxProxySmokeTest {
         assertTrue(results.all { it != null && it == results[0] }, "all concurrent results should agree")
     }
 
-    /** Exercises the streaming decode path on a genuinely large body, not a mock fixture. */
+    /**
+     * Exercises the streaming decode path on an unbounded searchRead. The expected row count is
+     * taken from searchCount against the same domain rather than hard-coded — a smoke test must
+     * pass against any gateway, whose dataset size we do not control.
+     */
     @Test
-    fun `read-only - large searchRead streams without limit`() {
+    fun `read-only - unbounded searchRead streams without limit`() {
+        val expected = OdxProxy.searchCount(
+            "res.partner", listOf<Any>(emptyList<Any>()), OdxClientKeywordRequest(), null
+        ).get().result
+        assertNotNull(expected)
+        Assumptions.assumeTrue(expected > 0, "Skipping: gateway has no res.partner records to stream")
+
         val kw = OdxClientKeywordRequest(fields = listOf("id", "name", "company_id", "ref", "email"))
         val started = System.currentTimeMillis()
         val res = OdxProxy.searchRead(
@@ -153,8 +164,8 @@ class OdxProxySmokeTest {
         assertNotNull(rows)
         val withCompany = rows.count { it.company.id != null }
         val falseEmails = rows.count { it.email.value == null }
-        println("large searchRead -> ${rows.size} rows in ${elapsed}ms")
+        println("unbounded searchRead -> ${rows.size} rows in ${elapsed}ms")
         println("   OdxMany2One resolved: $withCompany/${rows.size} | email decoded as false->null: $falseEmails/${rows.size}")
-        assertTrue(rows.size > 100, "expected a large result set, got ${rows.size}")
+        assertEquals(expected, rows.size, "searchRead without a limit should return every counted row")
     }
 }

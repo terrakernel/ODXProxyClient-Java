@@ -123,7 +123,7 @@ public class OdxProxyClient private constructor(options: OdxProxyClientInfo) {
                 response.use { resp ->
                     val envelopeSerializer = OdxServerResponse.serializer(resultSerializer)
                     // OkHttp 5 made Response.body non-null — an absent body is an empty one,
-                    // so emptiness is checked via contentLength() rather than a null check.
+                    // so emptiness is probed on the source rather than via a null check.
                     val responseBody = resp.body
 
                     if (!resp.isSuccessful) {
@@ -140,7 +140,11 @@ public class OdxProxyClient private constructor(options: OdxProxyClientInfo) {
                         return
                     }
 
-                    if (responseBody.contentLength() == 0L) {
+                    // contentLength() is -1 for chunked/unknown-length bodies, so it cannot tell
+                    // "empty" from "length not declared". exhausted() blocks until at least one
+                    // byte is buffered or the stream ends, and it does not consume what it peeks,
+                    // so the decode below still sees the whole body.
+                    if (responseBody.source().exhausted()) {
                         future.completeExceptionally(IOException("Empty response from server"))
                         return
                     }
