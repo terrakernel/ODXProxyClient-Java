@@ -109,6 +109,85 @@ All methods are `@JvmStatic` on `io.odxproxy.OdxProxy` and return `CompletableFu
 
 ---
 
+## v2 API — Odoo 19+ (JSON-2)
+
+`io.odxproxy.OdxProxyV2` talks to ODXProxy's `/v2/odoo/*` endpoints (**ODXProxy 0.9.0+**), which reach Odoo over its **JSON-2** API instead of `/jsonrpc`. It uses the **same `OdxProxy.init(...)` singleton** and instance. There is nothing new to set up, and it's still one Odoo instance per process.
+
+**When to use which:**
+
+| Odoo version | `OdxProxy` (v1) | `OdxProxyV2` |
+|---|---|---|
+| 18 or older | ✅ only option | ❌ (`isJson2Unavailable`) |
+| 19 – 21 | ✅ | ✅ |
+| 22 and newer | ❌ (`/jsonrpc` removed) | ✅ only option |
+
+`OdxProxyV2.isSupported()` checks the configured instance once and caches the answer.
+
+```kotlin
+// Optional: a default Odoo context for every v2 call (v1 calls are not affected)
+OdxProxy.init(OdxProxyClientInfo(
+    OdxInstanceInfo("https://erp.example.com", 2, "prod", "ODOO_USER_API_KEY"),
+    "PROXY_X_API_KEY",
+    "https://gateway.odxproxy.io",
+    mapOf("lang" to "en_US", "tz" to "Asia/Jakarta", "allowed_company_ids" to listOf(1)),
+))
+
+val partners = OdxProxyV2.searchRead(
+    "res.partner", Partner::class.java,
+    domain = listOf(listOf("is_company", "=", true)),
+    fields = listOf("name", "email"), limit = 20, order = "name asc",
+).get().result
+
+val ids = OdxProxyV2.search("res.partner", listOf(listOf("customer_rank", ">", 0)), limit = 10).get().result
+val count = OdxProxyV2.searchCount("res.partner", emptyList()).get().result
+val rows = OdxProxyV2.read("res.partner", Partner::class.java, listOf(3, 4), fields = listOf("name")).get().result
+
+val newIds = OdxProxyV2.create("res.partner", listOf(mapOf("name" to "Acme"), mapOf("name" to "Globex"))).get().result // [41, 42]
+val one = OdxProxyV2.createOne("res.partner", mapOf("name" to "Initech")).get().result                           // 43
+OdxProxyV2.write("res.partner", newIds!!, mapOf("comment" to "via v2")).get()
+OdxProxyV2.remove("res.partner", newIds).get()
+
+OdxProxyV2.callMethod("account.move", "action_post", Boolean::class.javaObjectType, ids = listOf(7)).get()
+OdxProxyV2.callMethod("res.partner", "name_search", JsonArray::class.java,
+    kwargs = mapOf("name" to "Acm", "limit" to 5)).get()
+```
+
+From Java, optional arguments are trailing `@JvmOverloads` parameters. Pass `null` for ones you skip:
+
+```java
+List<Object> domain = List.of(List.of("is_company", "=", true));
+OdxProxyV2.searchRead("res.partner", Partner.class, domain, List.of("name"), null, 20)
+    .thenAccept(res -> render(res.getResult()));
+```
+
+| Method | Odoo method | Arguments sent | `result` |
+|---|---|---|---|
+| `search(model, domain, offset?, limit?, order?, context?, id?)` | `search` | `domain`, `offset`, `limit`, `order` | `List<Int>` |
+| `searchRead(model, T.class, domain?, fields?, offset?, limit?, order?, context?, id?)` | `search_read` | `domain`, `fields`, `offset`, `limit`, `order` | `List<T>` |
+| `searchCount(model, domain, limit?, context?, id?)` | `search_count` | `domain`, `limit` | `Int` |
+| `read(model, T.class, ids, fields?, load?, context?, id?)` | `read` | `ids`, `fields`, `load` | `List<T>` |
+| `fieldsGet(model, T.class, allfields?, attributes?, context?, id?)` | `fields_get` | `allfields`, `attributes` | `T` (use `JsonObject`) |
+| `create(model, [vals…], context?, id?)` | `create` | `vals_list` | `List<Int>`, always |
+| `createOne(model, vals, context?, id?)` | `create` | `vals_list: [vals]` | `Int` |
+| `write(model, ids, vals, context?, id?)` | `write` | `ids`, `vals` | `Boolean` |
+| `remove(model, ids, context?, id?)` | `unlink` | `ids` | `Boolean` |
+| `callMethod(model, method, T.class, ids?, kwargs?, context?, id?)` | *method* | `ids` (if given) + `kwargs` | `T` |
+| `version(url?, id?)` | – | `POST /v2/odoo/version` | `OdxV2VersionInfo` (`.major`) |
+| `isSupported(url?)` | – | uses `version` | `CompletableFuture<Boolean>` (cached) |
+
+**How v2 differs from v1:**
+
+- **Named arguments only.** There are no `params` and no `OdxClientKeywordRequest`. Each argument is sent under Odoo's Python parameter name. In `callMethod`, `ids` is for record methods only, and every other argument goes in `kwargs` under its Python name. Odoo rejects unknown names, and `ids` on `@api.model` methods, with `odooStatus == 422`.
+- **The domain is the list itself:** `listOf(listOf("is_company", "=", true))`. v1's extra wrapping list is gone.
+- **`null` arguments are omitted**, so Odoo's own defaults apply.
+- **`create` always returns a list of ids**, even for one record. Use `createOne` for an `Int`.
+- **The key must be an Odoo API key**, not a password. On Odoo 20+ its scope must be `rpc` (the default), and keys of non-admin users expire. `userId` is not sent, because Odoo derives the user from the key.
+- **Context:** `OdxProxyClientInfo.defaultContext` is merged into every v2 call, and a call's `context` keys win. Odoo applies no company selection unless `allowed_company_ids` is sent.
+- **Multi-database hosts:** the database is selected by header and filtered by the server's `dbfilter`. If the host picks the database from its hostname, the instance `url` must be that database's own hostname. Otherwise calls fail with `isJson2Unavailable`.
+- **Binary fields on Odoo 20+** read as `{"content", "filename"?, "size"}` instead of a base64 string. This is an Odoo 20 change and applies to v1 too.
+
+---
+
 ## Odoo polymorphism — the types you **must** use
 
 Odoo's JSON is inconsistent. Use these wrappers in your `@Serializable` models or deserialization will fail.
@@ -210,6 +289,17 @@ Failures complete the `CompletableFuture` exceptionally — `.get()` throws `Exe
 
 Always handle both `result` and `error` paths — Odoo can return HTTP 200 with an error envelope (e.g., `AccessDenied`), which the library surfaces as `OdxServerErrorException`.
 
+`OdxServerErrorException` also carries the response's `httpStatus` and these helpers (codes are constants such as `OdxServerErrorException.JSON2_UNAVAILABLE`):
+
+| Helper | Meaning |
+|---|---|
+| `odooStatus` | For an Odoo-side error, Odoo's HTTP status, which the proxy forwards as `code` (always on v2; on v1 only when Odoo itself answered non-2xx). `401` Odoo API key invalid/expired, which is not the same as `AUTH_FAILED` (the proxy key). `403` access rights or private method, `404` unknown model/method or missing record, `409` lock conflict, `422` validation error or bad arguments, `5xx` server error. `null` otherwise. |
+| `odooErrorName` | Odoo's exception class from `data.name`, e.g. `odoo.exceptions.ValidationError`. |
+| `isLicenseError` | Code `0` **on HTTP 403**. Odoo 19+ also uses code `0` for every `/jsonrpc` error, on HTTP 200, so don't test `code == 0` alone. |
+| `isJson2Unavailable` | **v2:** `-32006`, meaning no JSON-2 on that Odoo (≤18, use v1), or the database isn't selectable on that host (`dbfilter`). |
+| `isInvalidRequest` | **v2:** `-32007`, meaning an invalid model/method name, or a db/api key that isn't valid as an HTTP header. Odoo was not contacted. |
+| `isRetryable` | `true` for `UPSTREAM_CONNECT` and Odoo `409`. Timeouts are excluded, because the call may already have run. |
+
 ---
 
 ## For Android consumers specifically
@@ -272,6 +362,10 @@ If you're an AI assistant generating code that uses this library, these rules pr
 | Hand-rolling HTTP to the gateway with OkHttp/Retrofit | Defeats the polymorphism defense, the singleton transport, and the cached serializers | Use `OdxProxy.<method>(...)` |
 | `Json { ... }.decodeFromString(...)` on raw responses | Bypasses `OdxServerResponse<T>` envelope handling | Let the library decode; consume `OdxServerResponse<T>.result` |
 | Blocking inside `.thenAccept` (e.g., file I/O, DB call, `Thread.sleep`) | Holds an OkHttp dispatcher thread, throttling other requests | Use `.thenAcceptAsync(cb, myExecutor)` |
+| v2: passing v1-style nested params, e.g. `listOf(listOf(listOf(...)))` as `domain`, or `"args"` in `kwargs` | JSON-2 takes named arguments only. Unknown names and extra nesting fail with `odooStatus == 422` | `domain = listOf(listOf("field", "=", value))`; every other argument under its Odoo Python name |
+| v2: camelCasing Odoo argument or field names (`valsList`, `allFields`, `isCompany`) | Odoo matches names exactly | Use Odoo's names verbatim: `vals_list`, `allfields`, `is_company` |
+| v2: sending `ids` to `search`, `create`, `fields_get`, or another `@api.model` method | Odoo rejects it with 422 | Use the dedicated method; in `callMethod`, pass `ids` only for record methods |
+| Treating `code == 0` as a license error | Odoo 19+ v1 errors are also code 0 (on HTTP 200) | Use `isLicenseError` |
 
 ---
 

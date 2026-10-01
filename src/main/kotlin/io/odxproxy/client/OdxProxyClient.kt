@@ -4,6 +4,9 @@ import io.odxproxy.exception.OdxServerErrorException
 import io.odxproxy.model.OdxClientRequest
 import io.odxproxy.model.OdxInstanceInfo
 import io.odxproxy.model.OdxServerResponse
+import io.odxproxy.model.OdxV2Request
+import io.odxproxy.model.OdxV2VersionInfo
+import io.odxproxy.model.OdxVersionRequest
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.ListSerializer
@@ -27,12 +30,16 @@ import java.util.concurrent.atomic.AtomicReference
 public class OdxProxyClient private constructor(options: OdxProxyClientInfo) {
 
     public val odooInstance: OdxInstanceInfo = options.instance
+    /** v2 only: context merged into every [io.odxproxy.OdxProxyV2] call. */
+    public val defaultContext: Map<String, Any?>? = options.defaultContext
     private val apiKey: String = options.odxApiKey
     private val gatewayUrl: String = options.gatewayUrl.removeSuffix("/")
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
     private val endpoint: HttpUrl = "$gatewayUrl/api/odoo/execute".toHttpUrl()
+    private val v2Endpoint: HttpUrl = "$gatewayUrl/v2/odoo/execute".toHttpUrl()
+    private val v2VersionEndpoint: HttpUrl = "$gatewayUrl/v2/odoo/version".toHttpUrl()
     private val baseHeaders: Headers = Headers.headersOf(
         "Accept", "application/json",
         "X-Api-Key", apiKey
@@ -79,18 +86,41 @@ public class OdxProxyClient private constructor(options: OdxProxyClientInfo) {
         requestData: OdxClientRequest,
         resultType: Class<T>
     ): CompletableFuture<OdxServerResponse<T>> {
-        return executeCall(requestData, elementSerializer(resultType))
+        return executeCall(endpoint, OdxClientRequest.serializer(), requestData, elementSerializer(resultType))
     }
 
     public fun <T> postRequestList(
         requestData: OdxClientRequest,
         resultType: Class<T>
     ): CompletableFuture<OdxServerResponse<List<T>>> {
-        return executeCall(requestData, listSerializerFor(resultType))
+        return executeCall(endpoint, OdxClientRequest.serializer(), requestData, listSerializerFor(resultType))
     }
 
-    private fun <R> executeCall(
-        requestData: OdxClientRequest,
+    /** v2: `POST /v2/odoo/execute` (Odoo JSON-2, ODXProxy 0.9.0+). Same envelope and errors as [postRequest]. */
+    public fun <T> postV2Request(
+        requestData: OdxV2Request,
+        resultType: Class<T>
+    ): CompletableFuture<OdxServerResponse<T>> {
+        return executeCall(v2Endpoint, OdxV2Request.serializer(), requestData, elementSerializer(resultType))
+    }
+
+    /** v2 variant of [postRequestList]. */
+    public fun <T> postV2RequestList(
+        requestData: OdxV2Request,
+        resultType: Class<T>
+    ): CompletableFuture<OdxServerResponse<List<T>>> {
+        return executeCall(v2Endpoint, OdxV2Request.serializer(), requestData, listSerializerFor(resultType))
+    }
+
+    /** v2: `POST /v2/odoo/version`, Odoo's `GET /json/version` through the proxy. */
+    public fun postV2Version(requestData: OdxVersionRequest): CompletableFuture<OdxServerResponse<OdxV2VersionInfo>> {
+        return executeCall(v2VersionEndpoint, OdxVersionRequest.serializer(), requestData, OdxV2VersionInfo.serializer())
+    }
+
+    private fun <B, R> executeCall(
+        url: HttpUrl,
+        bodySerializer: KSerializer<B>,
+        requestData: B,
         resultSerializer: KSerializer<R>
     ): CompletableFuture<OdxServerResponse<R>> {
         val future = CompletableFuture<OdxServerResponse<R>>()
@@ -99,7 +129,7 @@ public class OdxProxyClient private constructor(options: OdxProxyClientInfo) {
         // Java String (UTF-16) + redundant UTF-8 re-encoding done by encodeToString + toRequestBody.
         val body: RequestBody = try {
             val buffer = Buffer()
-            json.encodeToStream(OdxClientRequest.serializer(), requestData, buffer.outputStream())
+            json.encodeToStream(bodySerializer, requestData, buffer.outputStream())
             BufferRequestBody(buffer, jsonMediaType)
         } catch (e: Exception) {
             future.completeExceptionally(e)
@@ -107,7 +137,7 @@ public class OdxProxyClient private constructor(options: OdxProxyClientInfo) {
         }
 
         val request = Request.Builder()
-            .url(endpoint)
+            .url(url)
             .headers(baseHeaders)
             .post(body)
             .build()
@@ -132,11 +162,11 @@ public class OdxProxyClient private constructor(options: OdxProxyClientInfo) {
                         try {
                             val errorEnvelope = json.decodeFromStream(envelopeSerializer, responseBody.byteStream())
                             if (errorEnvelope.error != null) {
-                                future.completeExceptionally(OdxServerErrorException(errorEnvelope.error))
+                                future.completeExceptionally(OdxServerErrorException(errorEnvelope.error, resp.code))
                                 return
                             }
                         } catch (_: Exception) { /* not a JSON envelope; fall through */ }
-                        future.completeExceptionally(OdxServerErrorException(resp.code, resp.message, null))
+                        future.completeExceptionally(OdxServerErrorException(resp.code, resp.message, null, resp.code))
                         return
                     }
 
@@ -152,7 +182,7 @@ public class OdxProxyClient private constructor(options: OdxProxyClientInfo) {
                     try {
                         val serverResponse = json.decodeFromStream(envelopeSerializer, responseBody.byteStream())
                         if (serverResponse.error != null) {
-                            future.completeExceptionally(OdxServerErrorException(serverResponse.error))
+                            future.completeExceptionally(OdxServerErrorException(serverResponse.error, resp.code))
                         } else {
                             future.complete(serverResponse)
                         }

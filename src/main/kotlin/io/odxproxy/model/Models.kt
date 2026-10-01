@@ -114,3 +114,49 @@ public fun toJsonElement(value: Any?): JsonElement {
         else -> JsonPrimitive(value.toString())
     }
 }
+
+// --- v2 (Odoo JSON-2, ODXProxy 0.9.0+) ---
+
+/** `odoo_instance` for v2: no `user_id`, because JSON-2 derives the user from the API key. */
+@Serializable
+public data class OdxV2Instance(
+    public val url: String,
+    public val db: String,
+    @SerialName("api_key") public val apiKey: String
+)
+
+/**
+ * Body of `POST /v2/odoo/execute` (SYSTEM_ARCHITECTURE.md §4.6). [kwargs] is sent to
+ * Odoo as named arguments, keyed by Odoo's Python parameter names.
+ */
+@Serializable
+public data class OdxV2Request(
+    @Serializable(with = OdxIdSerializer::class)
+    public val id: String,
+    @SerialName("model_id") public val modelId: String,
+    public val method: String,
+    public val kwargs: JsonObject,
+    @SerialName("odoo_instance") public val odooInstance: OdxV2Instance
+)
+
+/** Body of `POST /v2/odoo/version`. */
+@Serializable
+public data class OdxVersionRequest(
+    @Serializable(with = OdxIdSerializer::class)
+    public val id: String,
+    public val url: String
+)
+
+/** Odoo's `GET /json/version`, as returned by `OdxProxyV2.version`. */
+@Serializable
+public data class OdxV2VersionInfo(
+    /** e.g. `[20, 0, 0, "final", 0, "e"]` */
+    @SerialName("version_info") public val versionInfo: List<JsonElement>,
+    /** e.g. `"20.0+e"` */
+    public val version: String
+) {
+    /** Odoo's major version (`versionInfo[0]`), e.g. `20`. */
+    public val major: Int?
+        get() = (versionInfo.firstOrNull() as? JsonPrimitive)?.intOrNull
+}
+
