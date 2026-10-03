@@ -74,7 +74,8 @@ OdxProxy.init(config);
 ```java
 OdxProxy.searchRead(
     "res.partner",
-    Arrays.asList(Arrays.asList("customer_rank", ">", 0)),
+    // params = execute_kw's positional args, so the domain is wrapped once more
+    Arrays.asList(Arrays.asList(Arrays.asList("customer_rank", ">", 0))),
     new OdxClientKeywordRequest(Arrays.asList("name", "email"), null, 5, 0, null),
     null,                  // request id — null = auto-generate ULID
     JsonObject.class       // result element type
@@ -93,10 +94,10 @@ All methods are `@JvmStatic` on `io.odxproxy.OdxProxy` and return `CompletableFu
 
 | Method | Odoo action | Returns |
 |---|---|---|
-| `search(model, domain, kw, id)` | `search` | `List<Int>` of matching ids |
-| `searchRead(model, domain, kw, id, T.class)` | `search_read` | `List<T>` |
+| `search(model, params, kw, id)` | `search` | `List<Int>` of matching ids |
+| `searchRead(model, params, kw, id, T.class)` | `search_read` | `List<T>` |
 | `read(model, ids, kw, id, T.class)` | `read` | `List<T>` |
-| `searchCount(model, domain, kw, id)` | `search_count` | `Int` |
+| `searchCount(model, params, kw, id)` | `search_count` | `Int` |
 | `create(model, [vals…], kw, id, T.class)` | `create` | id of new record (typically `Integer`) |
 | `write(model, ids, values, kw, id)` | `write` | `Boolean` |
 | `remove(model, ids, kw, id)` | `unlink` | `Boolean` |
@@ -104,6 +105,8 @@ All methods are `@JvmStatic` on `io.odxproxy.OdxProxy` and return `CompletableFu
 | `callMethod(model, fn, params, kw, id, T.class)` | `call_method` | depends on the Odoo method |
 
 `kw` is an `OdxClientKeywordRequest(fields, order, limit, offset, context)`.
+
+`params` is passed to Odoo's `execute_kw` as its positional arguments, so for `search`, `searchRead` and `searchCount` the domain is its first element: `listOf(listOf(listOf("is_company", "=", true)))`, or `listOf(emptyList<Any>())` to match everything. Passing the bare domain makes Odoo fail with `ValueError: Domain() invalid item`.
 
 > The `id` parameter is the JSON-RPC request id — pass `null` to auto-generate a ULID.
 
@@ -362,6 +365,7 @@ If you're an AI assistant generating code that uses this library, these rules pr
 | Hand-rolling HTTP to the gateway with OkHttp/Retrofit | Defeats the polymorphism defense, the singleton transport, and the cached serializers | Use `OdxProxy.<method>(...)` |
 | `Json { ... }.decodeFromString(...)` on raw responses | Bypasses `OdxServerResponse<T>` envelope handling | Let the library decode; consume `OdxServerResponse<T>.result` |
 | Blocking inside `.thenAccept` (e.g., file I/O, DB call, `Thread.sleep`) | Holds an OkHttp dispatcher thread, throttling other requests | Use `.thenAcceptAsync(cb, myExecutor)` |
+| v1: passing the bare domain as `params`, e.g. `listOf(listOf("field", "=", value))` | `params` are `execute_kw`'s positional args, so Odoo reads each condition as a whole domain and fails with `ValueError: Domain() invalid item` | `listOf(listOf(listOf("field", "=", value)))` |
 | v2: passing v1-style nested params, e.g. `listOf(listOf(listOf(...)))` as `domain`, or `"args"` in `kwargs` | JSON-2 takes named arguments only. Unknown names and extra nesting fail with `odooStatus == 422` | `domain = listOf(listOf("field", "=", value))`; every other argument under its Odoo Python name |
 | v2: camelCasing Odoo argument or field names (`valsList`, `allFields`, `isCompany`) | Odoo matches names exactly | Use Odoo's names verbatim: `vals_list`, `allfields`, `is_company` |
 | v2: sending `ids` to `search`, `create`, `fields_get`, or another `@api.model` method | Odoo rejects it with 422 | Use the dedicated method; in `callMethod`, pass `ids` only for record methods |
