@@ -1,6 +1,13 @@
 package io.odxproxy.client
 
+import io.odxproxy.exception.OdxBrainConfigException
+import io.odxproxy.exception.OdxBrainException
+import io.odxproxy.exception.OdxBrainNotInstalledException
+import io.odxproxy.exception.OdxBrainRequestException
+import io.odxproxy.exception.OdxBrainTimeoutException
+import io.odxproxy.exception.OdxBrainUnavailableException
 import io.odxproxy.exception.OdxServerErrorException
+import io.odxproxy.model.OdxServerErrorResponse
 import io.odxproxy.model.OdxClientRequest
 import io.odxproxy.model.OdxInstanceInfo
 import io.odxproxy.model.OdxServerResponse
@@ -11,12 +18,15 @@ import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.decodeFromStream
 import kotlinx.serialization.json.encodeToStream
 import kotlinx.serialization.serializer
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.RequestBody.Companion.toRequestBody
 import okio.Buffer
 import okio.BufferedSink
 import java.io.IOException
@@ -40,6 +50,8 @@ public class OdxProxyClient private constructor(options: OdxProxyClientInfo) {
     private val endpoint: HttpUrl = "$gatewayUrl/api/odoo/execute".toHttpUrl()
     private val v2Endpoint: HttpUrl = "$gatewayUrl/v2/odoo/execute".toHttpUrl()
     private val v2VersionEndpoint: HttpUrl = "$gatewayUrl/v2/odoo/version".toHttpUrl()
+    private val v1VersionEndpoint: HttpUrl = "$gatewayUrl/api/odoo/version".toHttpUrl()
+    private val aboutEndpoint: HttpUrl = "$gatewayUrl/_/about".toHttpUrl()
     private val baseHeaders: Headers = Headers.headersOf(
         "Accept", "application/json",
         "X-Api-Key", apiKey
@@ -115,6 +127,113 @@ public class OdxProxyClient private constructor(options: OdxProxyClientInfo) {
     /** v2: `POST /v2/odoo/version`, Odoo's `GET /json/version` through the proxy. */
     public fun postV2Version(requestData: OdxVersionRequest): CompletableFuture<OdxServerResponse<OdxV2VersionInfo>> {
         return executeCall(v2VersionEndpoint, OdxVersionRequest.serializer(), requestData, OdxV2VersionInfo.serializer())
+    }
+
+    /** v1: `POST /api/odoo/version`, Odoo's `version_info` (`server_serie`, `server_version`, ...). */
+    public fun postV1Version(requestData: OdxVersionRequest): CompletableFuture<OdxServerResponse<JsonObject>> {
+        return executeCall(v1VersionEndpoint, OdxVersionRequest.serializer(), requestData, JsonObject.serializer())
+    }
+
+    /**
+     * `GET /_/about` (no API key): `{build, version, features}`. Used by
+     * [io.odxproxy.OdxBrain.isAvailable].
+     */
+    public fun getAbout(): CompletableFuture<OdxServerResponse<JsonObject>> {
+        val request = Request.Builder().url(aboutEndpoint).header("Accept", "application/json").get().build()
+        return sendRaw(request).thenApply { (code, text) ->
+            if (code !in 200..299) throw httpFailure(code, text)
+            json.decodeFromString(OdxServerResponse.serializer(JsonObject.serializer()), text)
+        }
+    }
+
+    /**
+     * ODXBrain transport (ODXProxy 0.10.0+): `POST` [body] to, or `GET` when [body] is
+     * `null`, the `/brain/v1/...` route [path]. Sends the proxy `X-Api-Key` and nothing
+     * else; the body is sent as given (see [io.odxproxy.OdxBrain]). Fails with an
+     * [OdxBrainException] subclass, including a bare 404 from a proxy that predates
+     * ODXBrain ([OdxBrainNotInstalledException]); the proxy's own 401/403 stay plain
+     * [OdxServerErrorException].
+     */
+    public fun brainRequest(path: String, body: JsonObject?): CompletableFuture<OdxServerResponse<JsonObject>> {
+        val builder = Request.Builder().url("$gatewayUrl$path".toHttpUrl()).headers(baseHeaders)
+        if (body != null) {
+            builder.post(json.encodeToString(JsonObject.serializer(), body).toRequestBody(jsonMediaType))
+        } else {
+            builder.get()
+        }
+        return sendRaw(builder.build()).thenApply { (code, text) -> decodeBrain(code, text) }
+    }
+
+    private fun decodeBrain(httpStatus: Int, text: String): OdxServerResponse<JsonObject> {
+        val envelopeSerializer = OdxServerResponse.serializer(JsonObject.serializer())
+        // Malformed requests get a plain-text 400/422 and old proxies a bare 404, neither of
+        // which is an envelope; only a body that decodes to one with `error` set is used as one.
+        val envelope = try {
+            json.decodeFromString(envelopeSerializer, text)
+        } catch (_: Exception) {
+            null
+        }
+        val error = envelope?.error
+        if (httpStatus !in 200..299) {
+            if (error != null) throw brainError(error, httpStatus)
+            if (httpStatus == 404) {
+                throw OdxBrainNotInstalledException(
+                    OdxServerErrorResponse(
+                        OdxServerErrorException.ODXBRAIN_NOT_INSTALLED,
+                        "This proxy has no /brain routes (it predates ODXBrain, proxy < 0.10.0)",
+                        JsonObject(mapOf("type" to JsonPrimitive("odxbrain_not_installed")))
+                    ),
+                    404
+                )
+            }
+            throw httpFailure(httpStatus, text)
+        }
+        if (envelope == null) {
+            throw IOException(if (text.isEmpty()) "Empty response from server" else "Serialization Error: not a JSON-RPC envelope")
+        }
+        if (error != null) throw brainError(error, httpStatus)
+        return envelope
+    }
+
+    private fun brainError(error: OdxServerErrorResponse, httpStatus: Int): OdxServerErrorException = when (error.code) {
+        OdxServerErrorException.ODXBRAIN_NOT_INSTALLED -> OdxBrainNotInstalledException(error, httpStatus)
+        OdxServerErrorException.ODXBRAIN_UNREACHABLE -> OdxBrainUnavailableException(error, httpStatus)
+        OdxServerErrorException.ODXBRAIN_TIMEOUT -> OdxBrainTimeoutException(error, httpStatus)
+        OdxServerErrorException.ODXBRAIN_CONFIG -> OdxBrainConfigException(error, httpStatus)
+        // On a 200, positive codes are ODXBrain's own HTTP status, never Odoo's.
+        in 100..599 -> when {
+            httpStatus != 200 -> OdxServerErrorException(error, httpStatus)
+            error.code == 400 -> OdxBrainRequestException(error, httpStatus)
+            error.code == 503 -> OdxBrainUnavailableException(error, httpStatus)
+            else -> OdxBrainException(error, httpStatus)
+        }
+        // The proxy's own codes (401 -32000, 403 license 0, ...) keep the plain type.
+        else -> OdxServerErrorException(error, httpStatus)
+    }
+
+    /** A non-2xx answer with no JSON-RPC envelope: the body is kept as text, never parsed. */
+    private fun httpFailure(httpStatus: Int, text: String): OdxServerErrorException {
+        val message = text.trim().take(500).ifEmpty { "HTTP $httpStatus" }
+        return OdxServerErrorException(httpStatus, message, text.ifEmpty { null }, httpStatus)
+    }
+
+    /** Sends [request] off the caller's thread and completes with (HTTP status, body text). */
+    private fun sendRaw(request: Request): CompletableFuture<Pair<Int, String>> {
+        val future = CompletableFuture<Pair<Int, String>>()
+        httpClient.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                future.completeExceptionally(e)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                try {
+                    response.use { future.complete(it.code to it.body.string()) }
+                } catch (e: Exception) {
+                    future.completeExceptionally(e)
+                }
+            }
+        })
+        return future
     }
 
     private fun <B, R> executeCall(

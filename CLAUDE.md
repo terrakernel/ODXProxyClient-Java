@@ -20,10 +20,12 @@ Tests live under `src/main/test/kotlin` (note: under `main/`, not the convention
 
 **Live tests run automatically when an untracked `odx-test.properties` exists, and `OdxProxyLiveTest` writes real records.** For offline checks, run only the mock classes:
 ```bash
-./gradlew test --tests "io.odxproxy.OdxProxyMockTest" --tests "io.odxproxy.OdxProxyV2MockTest"
+./gradlew test --tests "io.odxproxy.OdxProxyMockTest" --tests "io.odxproxy.OdxProxyV2MockTest" --tests "io.odxproxy.OdxBrainMockTest"
 ```
 
 `OdxProxyV2MockTest` asserts the exact `/v2/odoo/execute` body per `OdxProxyV2` method and the exception helpers. `OdxProxyV2LiveTest` is gated by **env vars**, not the properties file: `ODX_V2_GATEWAY_URL`, `ODX_V2_API_KEY`, `ODX_V2_ODOO_URL`, `ODX_V2_ODOO_DB`, `ODX_V2_ODOO_API_KEY`. Its write lifecycle also needs `ODX_V2_ALLOW_WRITES=1`. It needs ODXProxy 0.9.0+ and Odoo 19+.
+
+`OdxBrainMockTest` covers the nine definition-of-done items of the proxy's SYSTEM_ARCHITECTURE.md §7.2 (tagged `DoD n`). `OdxBrainLiveTest` is read-only and gated by env vars: `ODX_PROXY_URL`, `ODX_PROXY_API_KEY`, `ODOO_URL`, `ODOO_DB`, `ODOO_API_KEY`. `ODX_PROXY_NOBRAIN_URL` and `ODX_PROXY_NOSOPS_URL` are optional and add the no-ODXBrain and no-SOPs cases. The local stack `~/odx-it` provides all of them: run `source ~/odx-it/sdk/env.sh`.
 
 A `pom.xml` exists alongside `build.gradle.kts` — **Gradle is the source of truth**. The Maven file mirrors it for IDEs/consumers that prefer Maven metadata.
 
@@ -42,6 +44,12 @@ Three layers, all in `src/main/kotlin/io/odxproxy/`:
    - `isSupported` caches per URL in a `ConcurrentHashMap`.
    - `OdxProxyClient.executeCall` is shared by both versions: endpoint and body serializer are parameters.
 
+2c. **`OdxBrain` (ODXBrain facade)**: `OdxBrain.kt`, for ODXProxy 0.10.0+ `/brain/v1/...`, an optional sidecar that resolves questions to Odoo models and tasks to SOPs. Same singleton.
+   - Methods: `resolveModel`, `resolveSop`, `info`, `isAvailable` (`GET /_/about`, no key, reads `features.odxbrain`, missing = false), and `facts` (`OdxBrainFacts` from `/v2/odoo/version`, falling back to `/api/odoo/version` on -32006; cached per URL).
+   - `buildBody` puts `extra` first, then the non-null named fields, then `query` and `id`. It **never sends `null` facts** and refuses `id`/`odoo_instance` in `extra`. Never send `odoo_instance` on these routes.
+   - Transport: `OdxProxyClient.brainRequest` / `getAbout` / `postV1Version`. They read the body as text through `sendRaw`, then `decodeBrain` maps errors. A bare 404 means NotInstalled, and plain-text 400/422 are never parsed as JSON-RPC.
+   - Results (`model/BrainModels.kt`) are views over `raw: JsonObject`, kept unaltered. Never add a score threshold, a "best" accessor, or a closed `@Serializable` result type; those would drop fields ODXBrain adds.
+
 3. **Model layer** — `model/`:
    - `Models.kt`: request/response envelopes (`OdxClientRequest`, `OdxServerResponse<T>`, `OdxClientKeywordRequest`, `OdxInstanceInfo`). `OdxIdSerializer` accepts JSON id as either string or number and normalizes to `String`. `toJsonElement(Any?)` recursively converts arbitrary Java/Kotlin containers (`List`, `Map`, `Array`, primitives) into `JsonElement` — this is how Java callers can pass plain `Map`/`List` as `params` without writing serializers.
    - `OdooTypes.kt`: **the core defense against Odoo's polymorphic JSON.** `OdxMany2One` decodes `false | null | [id, "Name"] | []` into a uniform `(id, name)` pair. `OdxVariant<T>` wraps fields that Odoo may return as `false` instead of the declared type — when the value is the literal boolean `false` it decodes to `OdxVariant(null)` rather than throwing. When mapping Odoo records to POJOs, always use these wrappers for relational / nullable string fields. **Do not** use raw `String?` / `Int?` for fields Odoo can return as `false`.
@@ -50,7 +58,8 @@ Three layers, all in `src/main/kotlin/io/odxproxy/`:
 - Every throw site in `OdxProxyClient` passes the response's `httpStatus`.
 - Helpers: `odooStatus` (Odoo's HTTP status, forwarded as `code` on a 200), `odooErrorName`, `isLicenseError` (code 0 **on HTTP 403**, because Odoo 19+ `/jsonrpc` errors are also code 0 but on HTTP 200), `isJson2Unavailable` (-32006), `isInvalidRequest` (-32007), `isRetryable`.
 - Code constants live on the companion object (e.g. `OdxServerErrorException.JSON2_UNAVAILABLE`).
-- There is deliberately one exception class, not a hierarchy.
+- ODXBrain errors are the one exception to the single class: `OdxBrainException` (open, with `type` = `data.type`, `odooStatus` always null, and `isRetryable` only for -32009/-32010). Its subclasses are `OdxBrainNotInstalledException`, `OdxBrainUnavailableException`, `OdxBrainTimeoutException`, `OdxBrainConfigException` and `OdxBrainRequestException`. They extend `OdxServerErrorException`, so one `catch` still covers everything. They exist because the spec needs "not installed" to be its own type. Odoo and proxy errors stay plain `OdxServerErrorException`: don't add more subclasses for them.
+- Kotlin comments nest, so a path like `/brain/*` inside KDoc opens a comment and breaks compilation. Write `/brain/...` instead.
 
 `kotlin { explicitApi() }` is on — every public declaration needs explicit `public` and an explicit return type.
 

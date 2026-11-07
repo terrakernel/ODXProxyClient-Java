@@ -191,6 +191,39 @@ OdxProxyV2.searchRead("res.partner", Partner.class, domain, List.of("name"), nul
 
 ---
 
+## ODXBrain — which model? which SOP? (ODXProxy 0.10.0+)
+
+`io.odxproxy.OdxBrain` calls ODXProxy's `/brain/v1/...` routes. They are forwarded to **ODXBrain**, an optional sidecar that answers "which Odoo model holds X?" and "which SOP covers task Y?" for an LLM planning Odoo calls. ODXBrain never contacts Odoo: these calls send only the proxy `X-Api-Key`, never `odoo_instance`. It uses the same `OdxProxy.init(...)` singleton.
+
+```kotlin
+if (OdxBrain.isAvailable().get()) {                                  // GET /_/about → features.odxbrain
+    val facts = OdxBrain.facts().get()                               // OdxBrainFacts("20.0", ENTERPRISE), cached per URL
+    val models = OdxBrain.resolveModel("which invoice is not paid yet", facts).get().result!!
+    for (c in models.candidates) {                                   // every candidate, best first
+        OdxProxyV2.fieldsGet(c.model!!, JsonObject::class.java)      // then look at the real fields
+    }
+    val sop = OdxBrain.resolveSop("record a vendor bill from a purchase order", facts,
+        installedModules = listOf("account", "purchase")).get().result!!
+    if (sop.isNoMatch) { /* match == "none": stop and ask the user */ }
+}
+```
+
+| Method | Route | Returns |
+|---|---|---|
+| `resolveModel(query, facts?, k?, extra?, id?)` | `POST /brain/v1/resolve` | `OdxBrainModelResult` |
+| `resolveSop(query, facts?, installedModules?, company?, k?, extra?, id?)` | `POST /brain/v1/sops/resolve` | `OdxBrainSopResult` |
+| `info()` | `GET /brain/v1/info` | `JsonObject` (ODXBrain's `/info`; envelope `id` is `null`) |
+| `isAvailable()` | `GET /_/about` (no key) | `Boolean`: `features.odxbrain`, missing = `false`. Means configured, not up. |
+| `facts(source = AUTO, refresh = false)` | `/v2/odoo/version`, else `/api/odoo/version` | `OdxBrainFacts(odooVersion, edition)` |
+
+- **Unset facts are omitted, never sent as `null`.** A missing `odooVersion`/`edition` filters nothing; an explicit `null` is ODXBrain's 400. Never guess one: a wrong version silently removes correct answers. Get them from `facts()`.
+- **`extra`** forwards fields this SDK has no parameter for yet (e.g. `mapOf("model" to "bge-m3")`). Named arguments win over the same key; `id` and `odoo_instance` are refused.
+- **Results are views over ODXBrain's response.** `result.raw` is the `JsonObject` exactly as received, unknown fields included. Typed accessors read from it: `candidates`, `model`, `dim`, `corpusVersion`, `usage`, and the conditional `excluded`, `filtered`, `versionUnaudited`, `candidates[i].isProvisional`; for SOPs also `sops.root`/`sops.generation`, `match`/`isNoMatch` and `factsMissing`. None of the conditional fields is an error.
+- **There is no `minScore` and no "best match" accessor.** The order is the contract, the score scale is not. Check an SOP's `title` against the task before acting: embeddings match the topic, not the operation. An SOP `version` is opaque: compare it, never parse it.
+- **Errors** are `OdxBrainException` subclasses of `OdxServerErrorException` (see [Errors](#errors)).
+
+---
+
 ## Odoo polymorphism — the types you **must** use
 
 Odoo's JSON is inconsistent. Use these wrappers in your `@Serializable` models or deserialization will fail.
@@ -303,6 +336,19 @@ Always handle both `result` and `error` paths — Odoo can return HTTP 200 with 
 | `isInvalidRequest` | **v2:** `-32007`, meaning an invalid model/method name, or a db/api key that isn't valid as an HTTP header. Odoo was not contacted. |
 | `isRetryable` | `true` for `UPSTREAM_CONNECT` and Odoo `409`. Timeouts are excluded, because the call may already have run. |
 
+**ODXBrain errors** (`OdxBrain`, `/brain/v1/...`) are subclasses of `OdxServerErrorException`, so an existing `catch` still covers them. On these routes `odooStatus` is always `null`: codes 100–599 are ODXBrain's HTTP statuses, never Odoo's. `type` is ODXBrain's `data.type`; branch on it, never on the message. `data` keeps ODXBrain's whole error object.
+
+| Exception | When | `isRetryable` |
+|---|---|---|
+| `OdxBrainNotInstalledException` | `-32008` on HTTP 501, or a bare 404 (proxy older than 0.10.0). Hide the feature. | no |
+| `OdxBrainUnavailableException` | `-32009` on 502 (unreachable), or `503` on a 200 (`type` `corpus_unavailable` / `sops_unavailable`) | once for `-32009`; no for `503` |
+| `OdxBrainTimeoutException` | `-32010` on 504 | once |
+| `OdxBrainConfigException` | `-32011` on 502: ODXBrain rejected the **proxy's** key. An operator problem; deliberately not `AUTH_FAILED`. | no |
+| `OdxBrainRequestException` | `400` on a 200: bad input (`invalid_request_error`, `unsupported_version`, `model_mismatch`, …) | no |
+| `OdxBrainException` | any other ODXBrain error on a 200 (e.g. `500`, `internal_error`) | no |
+
+The proxy's own refusals on these routes stay plain `OdxServerErrorException` (401 `AUTH_FAILED`, 403 `isLicenseError`). A plain-text 400/422 (a body the proxy couldn't parse) is a plain `OdxServerErrorException` with `code` = HTTP status and the body text as message and `data`.
+
 ---
 
 ## For Android consumers specifically
@@ -332,7 +378,9 @@ Three layers under `src/main/kotlin/io/odxproxy/`:
 2. **`client/OdxProxyClient`** — process-wide singleton via `AtomicReference`. Owns the shared `OkHttpClient` (tuned dispatcher + 16-conn keepalive pool), the `Json` codec (`ignoreUnknownKeys`, `isLenient`, `explicitNulls = false`), and two `ConcurrentHashMap` serializer caches (element and `List<element>`) populated via atomic `computeIfAbsent`. POSTs to `${gatewayUrl}/api/odoo/execute` with `X-Api-Key`. Request bodies are stream-encoded into an Okio `Buffer` (no intermediate Java `String`) and responses are stream-decoded via `Json.decodeFromStream`.
 3. **`model/`** — `Models.kt` holds the request/response envelopes plus `toJsonElement` for converting arbitrary Java/Kotlin containers to `JsonElement` (so Java callers can pass plain `Map`/`List`). `OdooTypes.kt` holds `OdxMany2One` and `OdxVariant<T>` plus their custom serializers — these are the core defense against polymorphic Odoo JSON. `OdxIdSerializer` accepts the JSON-RPC `id` as either string or number and normalizes to `String`.
 
-`exception/OdxServerErrorException` is what every failure surfaces as (HTTP + JSON-RPC error envelopes both).
+`OdxProxyV2` (v2, `/v2/odoo/...`) and `OdxBrain` (`/brain/v1/...` and `/_/about`) are further facades over the same client singleton. `OdxBrain` results (`model/BrainModels.kt`) are views over the raw `JsonObject`, so nothing ODXBrain adds is lost.
+
+`exception/OdxServerErrorException` is what every failure surfaces as (HTTP + JSON-RPC error envelopes both). ODXBrain errors are its `OdxBrainException` subclasses.
 
 The library compiles with `kotlin { explicitApi() }` — every public declaration must have an explicit `public` modifier and explicit return type.
 
@@ -347,7 +395,7 @@ The library compiles with `kotlin { explicitApi() }` — every public declaratio
 ./gradlew publishToMavenLocal
 ```
 
-Tests live at `src/main/test/kotlin` (non-standard; the `build.gradle.kts` sourceSet config points the test task there). The live integration test (`OdxProxyLiveTest`) self-skips unless `odx-test.properties` exists at the repo root with valid gateway credentials.
+Tests live at `src/main/test/kotlin` (non-standard; the `build.gradle.kts` sourceSet config points the test task there). The live integration test (`OdxProxyLiveTest`) self-skips unless `odx-test.properties` exists at the repo root with valid gateway credentials. `OdxBrainLiveTest` (read-only) self-skips unless `ODX_PROXY_URL`, `ODX_PROXY_API_KEY`, `ODOO_URL`, `ODOO_DB` and `ODOO_API_KEY` are set; `ODX_PROXY_NOBRAIN_URL` and `ODX_PROXY_NOSOPS_URL` add the no-ODXBrain and no-SOPs cases.
 
 ---
 
@@ -370,6 +418,13 @@ If you're an AI assistant generating code that uses this library, these rules pr
 | v2: camelCasing Odoo argument or field names (`valsList`, `allFields`, `isCompany`) | Odoo matches names exactly | Use Odoo's names verbatim: `vals_list`, `allfields`, `is_company` |
 | v2: sending `ids` to `search`, `create`, `fields_get`, or another `@api.model` method | Odoo rejects it with 422 | Use the dedicated method; in `callMethod`, pass `ids` only for record methods |
 | Treating `code == 0` as a license error | Odoo 19+ v1 errors are also code 0 (on HTTP 200) | Use `isLicenseError` |
+| ODXBrain: passing a guessed or defaulted `odooVersion`/`edition`, or `null` in `extra` | A wrong version silently removes correct answers; an explicit `null` is ODXBrain's 400 | Leave facts unset, or use `OdxBrain.facts()` |
+| ODXBrain: filtering candidates on `score`, or taking only `candidates[0]` | The score scale is not stable; recall@1 is far below recall@3 | Iterate every candidate in order and check with `fieldsGet` / the SOP `title` |
+| ODXBrain: running the top SOP when `isNoMatch` | `match == "none"` means no confident SOP | Stop and ask the user |
+| ODXBrain: retrying `OdxBrainNotInstalledException`, or treating it as an outage | It is a fact about the deployment | Hide the feature; check `OdxBrain.isAvailable()` up front |
+| ODXBrain: treating `OdxBrainConfigException` (`-32011`) as a bad API key | The caller's key was accepted; the operator's ODXBrain key is wrong | Report it to the proxy operator; don't rotate the caller's key |
+| ODXBrain: branching on `e.message` | Messages change; `data.type` is frozen | Branch on the exception class and `(e as OdxBrainException).type` |
+| ODXBrain: decoding `/brain` results into a closed `@Serializable` class | Drops `excluded`, `filtered`, `version_unaudited` and anything ODXBrain adds later | Use `OdxBrainModelResult` / `OdxBrainSopResult`, or read `result.raw` |
 
 ---
 

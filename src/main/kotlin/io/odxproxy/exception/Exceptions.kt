@@ -5,7 +5,12 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
-public class OdxServerErrorException : RuntimeException {
+/**
+ * Every error this SDK raises from the proxy. ODXBrain calls ([io.odxproxy.OdxBrain]) raise
+ * the [OdxBrainException] subclasses, so one `catch (OdxServerErrorException)` still covers
+ * everything; catch a subclass to tell "not installed" from an outage.
+ */
+public open class OdxServerErrorException : RuntimeException {
     public val code: Int
     public val data: JsonElement?
 
@@ -28,7 +33,7 @@ public class OdxServerErrorException : RuntimeException {
 
     public constructor(code: Int, message: String, debugData: String?, httpStatus: Int?) : super(message) {
         this.code = code
-        this.data = null
+        this.data = debugData?.let { JsonPrimitive(it) }
         this.httpStatus = httpStatus
     }
 
@@ -40,7 +45,7 @@ public class OdxServerErrorException : RuntimeException {
      * Always set on v2 ([io.odxproxy.OdxProxyV2]); on v1 only when Odoo itself
      * answered non-2xx. `null` otherwise.
      */
-    public val odooStatus: Int?
+    public open val odooStatus: Int?
         get() = if (httpStatus == 200 && code in 400..599) code else null
 
     /** Odoo's exception class from `data.name` (e.g. `odoo.exceptions.ValidationError`), when present. */
@@ -71,11 +76,11 @@ public class OdxServerErrorException : RuntimeException {
      * connection to Odoo, or an Odoo lock conflict (409). Timeouts are excluded
      * because the upstream call may already have run.
      */
-    public val isRetryable: Boolean
+    public open val isRetryable: Boolean
         get() = code == UPSTREAM_CONNECT || odooStatus == 409
 
     override fun toString(): String {
-        return "OdxServerErrorException(code=$code, httpStatus=$httpStatus, message='$message', data=$data)"
+        return "${javaClass.simpleName}(code=$code, httpStatus=$httpStatus, message='$message', data=$data)"
     }
 
     /** Proxy error codes (SYSTEM_ARCHITECTURE.md §6). */
@@ -89,5 +94,79 @@ public class OdxServerErrorException : RuntimeException {
         public const val PROXY_INTERNAL: Int = -32005
         public const val JSON2_UNAVAILABLE: Int = -32006
         public const val INVALID_REQUEST: Int = -32007
+        /** `/brain/...`: ODXBrain is not installed on this proxy (HTTP 501). See [OdxBrainNotInstalledException]. */
+        public const val ODXBRAIN_NOT_INSTALLED: Int = -32008
+        /** `/brain/...`: ODXBrain is installed but unreachable (HTTP 502). Retry once. */
+        public const val ODXBRAIN_UNREACHABLE: Int = -32009
+        /** `/brain/...`: ODXBrain timed out (HTTP 504). Retry once. */
+        public const val ODXBRAIN_TIMEOUT: Int = -32010
+        /** `/brain/...`: ODXBrain rejected the **proxy's** key (HTTP 502). An operator problem; never retry. */
+        public const val ODXBRAIN_CONFIG: Int = -32011
     }
 }
+
+/**
+ * An error on a `/brain/v1/...` route (SYSTEM_ARCHITECTURE.md §7.2), and itself thrown for
+ * ODXBrain's own errors that have no narrower class (e.g. `500` on an HTTP 200).
+ *
+ * On an HTTP 200, [code] is **ODXBrain's** HTTP status, never Odoo's, so [odooStatus] is
+ * always `null` here. Branch on [type] (ODXBrain's frozen discriminant), never on the
+ * message. [data] keeps ODXBrain's whole error object. The proxy's own refusals on these
+ * routes (401 `-32000`, 403 license) stay plain [OdxServerErrorException].
+ */
+public open class OdxBrainException(error: OdxServerErrorResponse, httpStatus: Int?) :
+    OdxServerErrorException(error, httpStatus) {
+
+    /**
+     * `data.type`: `invalid_request_error`, `model_mismatch`, `unsupported_version`,
+     * `embedding_error`, `resolve_error`, `corpus_unavailable`, `sops_unavailable`,
+     * `internal_error`, or the proxy's `odxbrain_not_installed`. `null` when absent.
+     */
+    public val type: String?
+        get() {
+            val t = (data as? JsonObject)?.get("type") as? JsonPrimitive ?: return null
+            return if (t.isString) t.content else null
+        }
+
+    /** Codes 100–599 on `/brain/...` are ODXBrain's statuses, not Odoo's. */
+    override val odooStatus: Int?
+        get() = null
+
+    /** `true` only for `-32009` (unreachable) and `-32010` (timed out): one retry is safe. */
+    override val isRetryable: Boolean
+        get() = code == ODXBRAIN_UNREACHABLE || code == ODXBRAIN_TIMEOUT
+}
+
+/**
+ * This proxy has no ODXBrain: `-32008` on HTTP 501, or a bare 404 on `/brain/...` from a
+ * proxy older than 0.10.0. A fact about the deployment: hide the feature, never retry.
+ */
+public class OdxBrainNotInstalledException(error: OdxServerErrorResponse, httpStatus: Int?) :
+    OdxBrainException(error, httpStatus)
+
+/**
+ * ODXBrain can't answer. `-32009` on HTTP 502: installed but unreachable, retry once
+ * ([isRetryable]). `503` on an HTTP 200: it is up but that index isn't loaded
+ * ([type] `corpus_unavailable` / `sops_unavailable`); don't retry.
+ */
+public class OdxBrainUnavailableException(error: OdxServerErrorResponse, httpStatus: Int?) :
+    OdxBrainException(error, httpStatus)
+
+/** `-32010` on HTTP 504: the proxy's hop to ODXBrain timed out. Retry once. */
+public class OdxBrainTimeoutException(error: OdxServerErrorResponse, httpStatus: Int?) :
+    OdxBrainException(error, httpStatus)
+
+/**
+ * `-32011` on HTTP 502: ODXBrain rejected the **proxy's** own key. An operator config
+ * error: the caller's key was accepted, so this is deliberately not an auth error
+ * (`-32000`). Rotating the caller's key will not help. Never retry.
+ */
+public class OdxBrainConfigException(error: OdxServerErrorResponse, httpStatus: Int?) :
+    OdxBrainException(error, httpStatus)
+
+/**
+ * `400` on an HTTP 200: ODXBrain rejected the input (empty query, bad edition, `k < 1`,
+ * version below 14.0, an explicit `null`). Don't retry; see [type].
+ */
+public class OdxBrainRequestException(error: OdxServerErrorResponse, httpStatus: Int?) :
+    OdxBrainException(error, httpStatus)
